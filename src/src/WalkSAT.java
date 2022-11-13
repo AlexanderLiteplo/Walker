@@ -3,106 +3,191 @@ package src;/*
  *
  */
 
-import aima.core.logic.propositional.algorithms.Model;
-import aima.core.logic.propositional.parsing.PEParser;
-import aima.core.logic.propositional.parsing.ast.Sentence;
-import aima.core.logic.propositional.parsing.ast.Symbol;
-import aima.core.logic.propositional.visitors.CNFClauseGatherer;
-import aima.core.logic.propositional.visitors.CNFTransformer;
-import aima.core.logic.propositional.visitors.SymbolCollector;
-import aima.core.util.Converter;
-import aima.core.util.Util;
+import aima.core.logic.propositional.kb.data.Clause;
+import aima.core.logic.propositional.kb.data.Model;
+import aima.core.logic.propositional.parsing.ast.PropositionSymbol;
 
-import java.util.Iterator;
-import java.util.List;
-import java.util.Random;
-import java.util.Set;
+
+import java.util.*;
 
 /**
- * @author Ravi Mohan
+ * Artificial Intelligence A Modern Approach (3rd Edition): page 263.<br>
+ * <br>
  *
+ * <pre>
+ * <code>
+ * function WALKSAT(clauses, p, max_flips) returns a satisfying model or failure
+ *   inputs: clauses, a set of clauses in propositional logic
+ *           p, the probability of choosing to do a "random walk" move, typically around 0.5
+ *           max_flips, number of flips allowed before giving up
+ *
+ *   model <- a random assignment of true/false to the symbols in clauses
+ *   for i = 1 to max_flips do
+ *       if model satisfies clauses then return model
+ *       clause <- a randomly selected clause from clauses that is false in model
+ *       with probability p flip the value in model of a randomly selected symbol from clause
+ *       else flip whichever symbol in clause maximizes the number of satisfied clauses
+ *   return failure
+ * </code>
+ * </pre>
+ *
+ * Figure 7.18 The WALKSAT algorithm for checking satisfiability by randomly
+ * flipping the values of variables. Many versions of the algorithm exist.
+ *
+ * @author Ciaran O'Reilly
+ * @author Ravi Mohan
+ * @author Mike Stampone
  */
 public class WalkSAT {
-    private Model myModel;
-    // long startTime = System.nanoTime();
 
+    public int numOfFlips;
 
-    private Random random = new Random();
-
-    public Model findModelFor(String logicalSentence, int numberOfFlips, double probabilityOfRandomWalk) {
-        myModel = new Model();
-        Sentence s = (Sentence) new PEParser().parse(logicalSentence);
-        CNFTransformer transformer = new CNFTransformer();
-        CNFClauseGatherer clauseGatherer = new CNFClauseGatherer();
-        SymbolCollector sc = new SymbolCollector();
-
-        List symbols = new Converter<Symbol>().setToList(sc.getSymbolsIn(s));
-        Random r = new Random();
-        for (int i = 0; i < symbols.size(); i++) {
-            Symbol sym = (Symbol) symbols.get(i);
-            myModel = myModel.extend(sym, Util.randomBoolean());
-        }
-        List<Sentence> clauses
-                = new Converter<Sentence>().setToList(clauseGatherer.getClausesFrom(transformer.transform(s)));
-
-        for (int i = 0; i < numberOfFlips; i++) {
-            if (getNumberOfClausesSatisfiedIn(new Converter<Sentence>().listToSet(clauses),
-                    myModel) == clauses.size()) {
-                return myModel;
+    /**
+     * WALKSAT(clauses, p, max_flips)<br>
+     *
+     * @param clauses
+     *            a set of clauses in propositional logic
+     * @param p
+     *            the probability of choosing to do a "random walk" move,
+     *            typically around 0.5
+     * @param duration
+     *            number of milliseconds allowed for walkSAT to run before giving up.
+     *
+     * @return a satisfying model or failure (null).
+     */
+    public Model walkSAT(Set<Clause> clauses, double p, long duration) {
+        assertLegalProbability(p);
+        // model <- a random assignment of true/false to the symbols in clauses
+        Model model = randomAssignmentToSymbolsInClauses(clauses);
+        this.numOfFlips = 0;
+        long startingTime = System.currentTimeMillis();
+        long currentTime = System.currentTimeMillis();
+        while ((currentTime - startingTime) < duration) {
+            // if model satisfies clauses then return model
+            if (model.satisfies(clauses)) {
+                return model;
             }
-            Sentence clause = (Sentence) clauses.get(random.nextInt(clauses
-                    .size()));
 
-            List<Symbol> symbolsInClause = new Converter<Symbol>()
-                    .setToList(sc.getSymbolsIn(clause));
-            if (random.nextDouble() >= probabilityOfRandomWalk) {
-                Symbol randomSymbol = (Symbol) symbolsInClause.get(random
-                        .nextInt(symbolsInClause.size()));
-                myModel = myModel.flip(randomSymbol);
+            // clause <- a randomly selected clause from clauses that is false
+            // in model
+            Clause clause = randomlySelectFalseClause(clauses, model);
+
+            // with probability p flip the value in model of a randomly selected
+            // symbol from clause
+            if (random.nextDouble() < p) {
+                model = model.flip(randomlySelectSymbolFromClause(clause));
             } else {
-                Symbol symbolToFlip = getSymbolWhoseFlipMaximisesSatisfiedClauses(
-                        new Converter<Sentence>().listToSet(clauses), symbolsInClause, myModel);
-                myModel = myModel.flip(symbolToFlip);
+                // else flip whichever symbol in clause maximizes the number of
+                // satisfied clauses
+                model = flipSymbolInClauseMaximizesNumberSatisfiedClauses(clause, clauses, model);
             }
-
+            numOfFlips++;
+            currentTime = System.currentTimeMillis();
         }
+        // return failure
         return null;
     }
 
-    private Symbol getSymbolWhoseFlipMaximisesSatisfiedClauses(Set<Sentence> clauses,
-                                                               List<Symbol> symbols, Model model) {
-        if (symbols.size() > 0) {
-            Symbol retVal = (Symbol) symbols.get(0);
-            int maxClausesSatisfied = 0;
-            for (int i = 0; i < symbols.size(); i++) {
-                Symbol sym = (Symbol) symbols.get(i);
-                if (getNumberOfClausesSatisfiedIn(clauses, model.flip(sym)) > maxClausesSatisfied) {
-                    retVal = sym;
-                    maxClausesSatisfied = getNumberOfClausesSatisfiedIn(
-                            clauses, model.flip(sym));
+    //
+    // SUPPORTING CODE
+    //
+    private Random random = new Random();
+
+    /**
+     * Default Constructor.
+     */
+    public WalkSAT() {
+        this.numOfFlips = 0;
+    }
+
+    /**
+     * Constructor.
+     *
+     * @param random
+     *            the random generator to be used by the algorithm.
+     */
+    public WalkSAT(Random random) {
+        this.random = random;
+    }
+
+    //
+    // PROTECTED
+    //
+    protected void assertLegalProbability(double p) {
+        if (p < 0 || p > 1) {
+            throw new IllegalArgumentException("p is not a legal propbability value [0-1]: "+p);
+        }
+    }
+
+    protected Model randomAssignmentToSymbolsInClauses(Set<Clause> clauses) {
+        // Collect the symbols in clauses
+        Set<PropositionSymbol> symbols = new LinkedHashSet<PropositionSymbol>();
+        for (Clause c : clauses) {
+            symbols.addAll(c.getSymbols());
+        }
+
+        // Make initial set of assignments
+        Map<PropositionSymbol, Boolean> values = new HashMap<PropositionSymbol, Boolean>();
+        for (PropositionSymbol symbol : symbols) {
+            // a random assignment of true/false to the symbols in clauses
+            values.put(symbol, random.nextBoolean());
+        }
+
+        Model result = new Model(values);
+
+        return result;
+    }
+
+    protected Clause randomlySelectFalseClause(Set<Clause> clauses, Model model) {
+        // Collect the clauses that are false in the model
+        List<Clause> falseClauses = new ArrayList<Clause>();
+        for (Clause c : clauses) {
+            if (Boolean.FALSE.equals(model.determineValue(c))) {
+                falseClauses.add(c);
+            }
+        }
+
+        // a randomly selected clause from clauses that is false
+        Clause result = falseClauses.get(random.nextInt(falseClauses.size()));
+        return result;
+    }
+
+    protected PropositionSymbol randomlySelectSymbolFromClause(Clause clause) {
+        // all the symbols in clause
+        Set<PropositionSymbol> symbols = clause.getSymbols();
+
+        // a randomly selected symbol from clause
+        PropositionSymbol result = (new ArrayList<PropositionSymbol>(symbols))
+                .get(random.nextInt(symbols.size()));
+        return result;
+    }
+
+    protected Model flipSymbolInClauseMaximizesNumberSatisfiedClauses(
+            Clause clause, Set<Clause> clauses, Model model) {
+        Model result = model;
+
+        // all the symbols in clause
+        Set<PropositionSymbol> symbols = clause.getSymbols();
+        int maxClausesSatisfied = -1;
+        for (PropositionSymbol symbol : symbols) {
+            Model flippedModel = result.flip(symbol);
+            int numberClausesSatisfied = 0;
+            for (Clause c : clauses) {
+                if (Boolean.TRUE.equals(flippedModel.determineValue(c))) {
+                    numberClausesSatisfied++;
                 }
             }
-            return retVal;
-        } else {
-            return null;
-        }
-
-    }
-
-    private List<Symbol> extractSymbols(Sentence sentence) {
-        SymbolCollector sc = new SymbolCollector();
-        return new Converter<Symbol>().setToList(sc.getSymbolsIn(sentence));
-    }
-
-    private int getNumberOfClausesSatisfiedIn(Set clauses, Model model) {
-        int retVal = 0;
-        Iterator i = clauses.iterator();
-        while (i.hasNext()) {
-            Sentence s = (Sentence) i.next();
-            if (model.isTrue(s)) {
-                retVal += 1;
+            // test if this symbol flip is the new maximum
+            if (numberClausesSatisfied > maxClausesSatisfied) {
+                result              = flippedModel;
+                maxClausesSatisfied = numberClausesSatisfied;
+                if (numberClausesSatisfied == clauses.size()) {
+                    // i.e. satisfies all clauses
+                    break; // this is our goal.
+                }
             }
         }
-        return retVal;
+
+        return result;
     }
 }
